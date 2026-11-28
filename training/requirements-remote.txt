@@ -1,0 +1,18 @@
+# Remote training dependencies (Debian 13, CUDA 12.8 wheel index).
+#
+# Python 3.11-3.13 are supported by these pins.  The CUDA build is installed
+# from the PyTorch wheel index; PyPI's Linux torch wheel also bundles CUDA, but
+# pinning the index makes the cu128 choice explicit.
+#
+# For a cu129 server, replace the extra index URL:
+#   https://download.pytorch.org/whl/cu129
+#
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0
+numpy==2.4.6
+chess==1.11.2
+zstandard==0.25.0
+orjson==3.13.0
+tqdm==4.70.1
+pytest==9.2.0

@@ -37,6 +37,8 @@ constexpr int INF = 32001;
 constexpr int MATE = 32000;
 constexpr int MATE_IN_MAX = MATE - MAX_PLY;
 constexpr int MAX_HIST = 4096;
+// HalfKP v1 accumulator width (docs/NNUE_PILOT.md 3.3 allows hidden <= 512).
+constexpr int MAX_NNUE_HIDDEN = 512;
 
 enum Color : int { WHITE = 0, BLACK = 1, COLOR_NB = 2 };
 constexpr Color operator~(Color c) { return Color(c ^ 1); }
@@ -206,6 +208,9 @@ struct Undo {
     int fullMove = 1;
     Piece captured = NO_PIECE;
     int capturedSq = -1;
+    // True when the move successfully updated the NNUE accumulators, so
+    // unmakeMove knows whether it has to reverse the deltas.
+    bool accUpdated = false;
 };
 
 class Position {
@@ -225,6 +230,18 @@ public:
     U64 keyHist[MAX_HIST] = {};
     bool isNullHist_[MAX_HIST] = {};
     Undo undoStack[MAX_HIST] = {};
+
+    // HalfKP v1 accumulators (one per perspective).  `mutable` lets
+    // evaluateNetwork() refresh them lazily from a const Position; each
+    // search thread owns its Position copy, so this never races with another
+    // thread.  The generation tag invalidates them when a new net is loaded.
+    // The int16 array is used only by the optional int8-FT fast path, where
+    // the maximum sum (31 * 127) safely fits in int16.
+    mutable int32_t nnueAccumulator[COLOR_NB][MAX_NNUE_HIDDEN] = {};
+    mutable int16_t nnueAccumulator16[COLOR_NB][MAX_NNUE_HIDDEN] = {};
+    mutable bool nnueAccValid = false;
+    mutable uint32_t nnueAccGeneration = 0;
+    mutable int nnueAccQuant = 0;  // 0 invalid, 16 = int16 FT, 8 = int8 FT
 
     Position();
 

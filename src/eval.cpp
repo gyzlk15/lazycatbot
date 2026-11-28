@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "nnue.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -459,25 +460,58 @@ int correction(const Position& pos) {
 
 void setEnabled(bool v) { enabled = v; }
 bool isEnabled() { return enabled; }
-void setWeight(int w) { weight = std::clamp(w, 0, 200); }
+void setWeight(int w) {
+    weight = std::clamp(w, 0, 200);
+    // Keep the v1 network's blend knob in the same 0..100 range.  The UCI
+    // option still advertises 0..200 for compatibility with old scripts.
+    NNUE::setNetWeight(std::min(weight, 100));
+}
 int getWeight() { return weight; }
 bool isAvailable() { return trained; }
 
 } // namespace NNUE
 
 int evaluate(const Position& pos) {
-    int base = classicalEvaluate(pos);
-    if (NNUE::trained && NNUE::enabled && NNUE::weight > 0) {
-        int net = NNUE::correction(pos);
-        if (NNUE::clip > 0)
-            net = std::clamp(net, -NNUE::clip, NNUE::clip);
-        if (NNUE::direct) {
-            base = (net * NNUE::weight + base * (100 - NNUE::weight)) / 100;
-        } else {
-            base += net * NNUE::weight / 100;
+    const auto clampScore = [](int v) {
+        return std::clamp(v, -MATE_IN_MAX + 1, MATE_IN_MAX - 1);
+    };
+
+    if (NNUE::isEnabled() && NNUE::backendIsCpu()) {
+        // Preferred path: a v1 .nnue file loaded through EvalFile.
+        if (NNUE::fileLoaded()) {
+            int net = NNUE::evaluateNetwork(pos);
+            const int material = NNUE::materialCp(pos);
+            const int materialWeight = NNUE::getNetMaterial();
+            if (materialWeight > 0)
+                net += material * materialWeight / 100;
+            const int clip = NNUE::getNetClip();
+            if (clip > 0) net = std::clamp(net, -clip, clip);
+            const int w = NNUE::getNetWeight();
+            if (w <= 0) return clampScore(classicalEvaluate(pos));
+            if (w >= 100) return clampScore(net);  // direct eval by default
+            const int base = classicalEvaluate(pos);
+            const long long blended =
+                (long long(net) * w + (long long(base) * (100 - w))) / 100;
+            return clampScore(int(blended));
+        }
+
+        // Compatibility path: the old compiled-in 768->64 residual network.
+        // It is only reachable when no v1 file is loaded, so the new path is
+        // never silently blended with the old one.
+        if (NNUE::legacyEnabled() && NNUE::trained && NNUE::weight > 0) {
+            int base = classicalEvaluate(pos);
+            int net = NNUE::correction(pos);
+            if (NNUE::clip > 0)
+                net = std::clamp(net, -NNUE::clip, NNUE::clip);
+            if (NNUE::direct) {
+                base = (net * NNUE::weight + base * (100 - NNUE::weight)) / 100;
+            } else {
+                base += net * NNUE::weight / 100;
+            }
+            return clampScore(base);
         }
     }
-    return std::clamp(base, -MATE_IN_MAX + 1, MATE_IN_MAX - 1);
+    return clampScore(classicalEvaluate(pos));
 }
 
 } // namespace chess

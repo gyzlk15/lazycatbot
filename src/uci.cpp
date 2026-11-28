@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "nnue.hpp"
 
 #include <atomic>
 #include <iostream>
@@ -64,14 +65,36 @@ public:
                 Output::raw(pos_.ascii());
             } else if (cmd == "eval") {
                 stopAndWait();
+                const NNUE::NetInfo ni = NNUE::info();
+                int neural = 0;
+                if (NNUE::isEnabled() && NNUE::backendIsCpu()) {
+                    if (NNUE::fileLoaded())
+                        neural = NNUE::evaluateNetwork(pos_);
+                    else if (NNUE::legacyEnabled())
+                        neural = NNUE::correction(pos_);
+                }
+                const bool direct = NNUE::fileLoaded()
+                                        ? NNUE::getNetWeight() >= 100
+                                        : NNUE::direct;
+                const int materialCp =
+                    NNUE::fileLoaded() ? NNUE::materialCp(pos_) : 0;
+                const int netMaterial = materialCp * NNUE::getNetMaterial() / 100;
                 std::ostringstream os;
                 os << "info string classical(stm) " << classicalEvaluate(pos_)
-                   << " neural " << NNUE::correction(pos_) << " total "
-                   << evaluate(pos_) << " nnue_available "
-                   << (NNUE::isAvailable() ? 1 : 0) << " enabled "
-                   << (NNUE::isEnabled() ? 1 : 0) << " weight "
+                   << " neural " << neural << " total " << evaluate(pos_)
+                   << " nnue_available "
+                   << ((NNUE::isAvailable() || NNUE::fileLoaded()) ? 1 : 0)
+                   << " enabled " << (NNUE::isEnabled() ? 1 : 0) << " weight "
                    << NNUE::getWeight() << " clip " << NNUE::clip
-                   << " direct " << (NNUE::direct ? 1 : 0);
+                   << " direct " << (direct ? 1 : 0) << " backend "
+                   << NNUE::backendName() << " version " << ni.version
+                   << " hidden " << ni.hidden << " ft_quant " << ni.ftQuant
+                   << " fc1_quant " << ni.fc1Quant
+                   << " net_weight "
+                   << NNUE::getNetWeight() << " net_clip " << NNUE::getNetClip()
+                   << " net_material " << netMaterial << " material_cp "
+                   << materialCp
+                   << " simd " << NNUE::simdName();
                 Output::line(os.str());
             } else if (cmd == "perft") {
                 stopAndWait();
@@ -233,12 +256,17 @@ private:
         os << "option name Hash type spin default 64 min 1 max 4096\n";
         os << "option name Threads type spin default 1 min 1 max 16\n";
         os << "option name Move Overhead type spin default 30 min 0 max 5000\n";
+        os << "option name EvalFile type string default <empty>\n";
+        os << "option name EvalBackend type string default cpu\n";
+        os << "option name EvalQuant type string default auto\n";
         os << "option name UseNNUE type check default "
            << (NNUE::enabled ? "true" : "false") << '\n';
         os << "option name NNUEWeight type spin default " << NNUE::weight
            << " min 0 max 200\n";
         os << "option name NNUEClip type spin default " << NNUE::clip
            << " min 0 max 1500\n";
+        os << "option name NNUEMaterial type spin default "
+           << NNUE::getNetMaterial() << " min 0 max 100\n";
         os << "option name SyzygyPath type string default <empty>\n";
         os << "option name SyzygyProbeDepth type spin default 1 min 1 max 100\n";
         os << "option name Syzygy50MoveRule type check default true\n";
@@ -267,6 +295,54 @@ private:
             stopAndWait();
             int mb = std::max(1, safeInt(value, 64));
             tt_.resize(std::min(mb, 4096));
+        } else if (name == "EvalFile") {
+            stopAndWait();
+            // Any explicit EvalFile configuration opts into the v1 path.
+            NNUE::disableLegacy();
+            const std::string path = (value == "<empty>") ? "" : value;
+            std::ostringstream os;
+            if (path.empty()) {
+                NNUE::unloadFile();
+                os << "info string EvalFile: cleared; classical evaluation";
+            } else {
+                std::string err;
+                if (NNUE::loadFile(path, err)) {
+                    const NNUE::NetInfo ni = NNUE::info();
+                    os << "info string EvalFile: loaded \"" << path
+                       << "\" version " << ni.version << " hidden "
+                       << ni.hidden << " buckets " << ni.buckets
+                       << " policy " << ni.policySize << " simd "
+                       << NNUE::simdName();
+                } else {
+                    // Guarantee the classical fallback rather than keeping a
+                    // half-initialized or stale network.
+                    NNUE::unloadFile();
+                    os << "info string EvalFile: failed to load \"" << path
+                       << "\": " << err << "; using classical evaluation";
+                }
+            }
+            Output::line(os.str());
+        } else if (name == "EvalBackend") {
+            stopAndWait();
+            if (value == "cpu" || value == "none") {
+                NNUE::setBackend(value);
+                Output::line("info string EvalBackend: " + value);
+            } else {
+                Output::line("info string EvalBackend: ignored \"" + value +
+                             "\" (expected cpu or none); keeping " +
+                             NNUE::backendName());
+            }
+        } else if (name == "EvalQuant") {
+            stopAndWait();
+            if (value == "auto" || value == "int8" || value == "int16") {
+                NNUE::setFtQuantMode(value);
+                Output::line("info string EvalQuant: " + value +
+                             " (reload EvalFile to apply)");
+            } else {
+                Output::line("info string EvalQuant: ignored \"" + value +
+                             "\" (expected auto, int8 or int16); keeping " +
+                             NNUE::ftQuantMode());
+            }
         } else if (name == "Threads") {
             stopAndWait();
             threads_ = std::clamp(safeInt(value, 1), 1, 16);
@@ -279,6 +355,10 @@ private:
         } else if (name == "NNUEClip") {
             stopAndWait();
             NNUE::clip = std::clamp(safeInt(value, 80), 0, 1500);
+            NNUE::setNetClip(NNUE::clip);
+        } else if (name == "NNUEMaterial") {
+            stopAndWait();
+            NNUE::setNetMaterial(safeInt(value, 0));
         } else if (name == "UseNNUE") {
             stopAndWait();
             NNUE::setEnabled(value == "true" || value == "1");

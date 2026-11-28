@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "nnue.hpp"
 
 #include <cctype>
 #include <sstream>
@@ -22,6 +23,9 @@ void Position::clear() {
     histPly = 0;
     std::memset(keyHist, 0, sizeof(keyHist));
     std::memset(isNullHist_, 0, sizeof(isNullHist_));
+    nnueAccValid = false;
+    nnueAccGeneration = 0;
+    nnueAccQuant = 0;
 }
 
 void Position::putPiece(Piece p, int sq) {
@@ -216,6 +220,7 @@ bool Position::setFen(const std::string& fen) {
     histPly = 0;
     keyHist[0] = key;
     isNullHist_[0] = false;
+    NNUE::refreshAccumulator(*this);
     return true;
 }
 
@@ -379,6 +384,7 @@ bool Position::makeMove(Move m) {
     u.fullMove = fullMove;
     u.captured = NO_PIECE;
     u.capturedSq = -1;
+    u.accUpdated = false;
 
     key ^= Zobrist::castling[castling];
     if (epHashable()) key ^= Zobrist::epFile[fileOf(ep)];
@@ -464,6 +470,9 @@ bool Position::makeMove(Move m) {
         unmakeMove(m);
         return false;
     }
+
+    // Board is final and the move is legal: update both accumulators.
+    u.accUpdated = NNUE::accumulatorAfterMake(*this, m, u, us);
     return true;
 }
 
@@ -502,6 +511,8 @@ void Position::unmakeMove(Move m) {
     halfMove = u.halfMove;
     fullMove = u.fullMove;
     key = u.key;
+
+    if (u.accUpdated) NNUE::accumulatorAfterUnmake(*this, m, u, us);
 }
 
 bool Position::makeNullMove() {
@@ -514,6 +525,7 @@ bool Position::makeNullMove() {
     u.fullMove = fullMove;
     u.captured = NO_PIECE;
     u.capturedSq = -1;
+    u.accUpdated = false;
 
     if (epHashable()) key ^= Zobrist::epFile[fileOf(ep)];
     ep = -1;
