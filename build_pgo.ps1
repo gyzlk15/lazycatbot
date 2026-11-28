@@ -25,6 +25,7 @@ $sources = @(
     "bitboards.cpp",
     "position.cpp",
     "eval.cpp",
+    "nnue.cpp",
     "search.cpp",
     "syzygy.cpp",
     "nnue_weights.cpp",

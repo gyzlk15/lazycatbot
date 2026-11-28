@@ -491,7 +491,8 @@ int evaluate(const Position& pos) {
             if (w >= 100) return clampScore(net);  // direct eval by default
             const int base = classicalEvaluate(pos);
             const long long blended =
-                (long long(net) * w + (long long(base) * (100 - w))) / 100;
+                (static_cast<long long>(net) * w +
+                 static_cast<long long>(base) * (100 - w)) / 100;
             return clampScore(int(blended));
         }
 
